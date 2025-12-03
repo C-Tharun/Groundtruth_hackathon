@@ -11,7 +11,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def convert_pptx_to_pdf_python(pptx_path: str, pdf_path: Optional[str] = None) -> Optional[str]:
+def convert_pptx_to_pdf_python(
+    pptx_path: str,
+    pdf_path: Optional[str] = None,
+) -> Optional[str]:
     """
     Convert PPTX to PDF using Python libraries (reportlab + Pillow).
     
@@ -78,6 +81,12 @@ def convert_pptx_to_pdf_python(pptx_path: str, pdf_path: Optional[str] = None) -
             leading=14
         )
         
+        # Ensure outputs directory exists for temp images
+        output_dir = Path(pdf_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        temp_files = []
+
         # Process each slide
         for slide_idx, slide in enumerate(prs.slides):
             if slide_idx > 0:
@@ -114,23 +123,25 @@ def convert_pptx_to_pdf_python(pptx_path: str, pdf_path: Optional[str] = None) -
                     try:
                         image_stream = io.BytesIO(shape.image.blob)
                         img = PILImage.open(image_stream)
-                        # Resize if too large
-                        max_width = 6 * inch
-                        max_height = 4 * inch
-                        img.thumbnail((max_width, max_height), PILImage.Resampling.LANCZOS)
+                        # Resize while maintaining aspect ratio
+                        max_width = 6.5 * inch
+                        max_height = 4.5 * inch
+                        aspect = img.height / img.width if img.width else 1
+                        width = max_width
+                        height = width * aspect
+                        if height > max_height:
+                            height = max_height
+                            width = height / aspect if aspect else max_width
                         
                         # Save temp image
-                        temp_img_path = f"outputs/temp_slide_{slide_idx}_img.png"
+                        temp_img_path = str(output_dir / f"temp_slide_{slide_idx}_img.png")
                         img.save(temp_img_path)
+                        temp_files.append(temp_img_path)
                         
                         # Add to PDF
-                        pdf_img = Image(temp_img_path, width=min(img.width/72, max_width), height=min(img.height/72, max_height))
+                        pdf_img = Image(temp_img_path, width=width, height=height)
                         story.append(pdf_img)
                         story.append(Spacer(1, 0.2*inch))
-                        
-                        # Clean up temp file
-                        if os.path.exists(temp_img_path):
-                            os.remove(temp_img_path)
                     except Exception as e:
                         logger.warning(f"Could not extract image from slide {slide_idx}: {e}")
         
@@ -139,6 +150,13 @@ def convert_pptx_to_pdf_python(pptx_path: str, pdf_path: Optional[str] = None) -
         
         if Path(pdf_path).exists():
             logger.info(f"PDF generated successfully: {pdf_path}")
+            # Clean up temp files
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except Exception:
+                    pass
             return pdf_path
         else:
             logger.error("PDF file was not created")
@@ -153,7 +171,10 @@ def convert_pptx_to_pdf_python(pptx_path: str, pdf_path: Optional[str] = None) -
         return None
 
 
-def convert_pptx_to_pdf(pptx_path: str, pdf_path: Optional[str] = None) -> Optional[str]:
+def convert_pptx_to_pdf(
+    pptx_path: str,
+    pdf_path: Optional[str] = None,
+) -> Optional[str]:
     """
     Convert PPTX to PDF using best available method.
     

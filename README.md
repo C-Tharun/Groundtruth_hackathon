@@ -172,12 +172,23 @@ The app will open in your default browser at `http://localhost:8501`.
 
 **UI Features:**
 - Upload CSV or use sample dataset
-- Configure date range filters
-- Select campaigns, locations, channels
+- Connect to SQL databases (any SQLAlchemy-compatible engine) and run ad-hoc queries
+- Load entire database tables (with row limits)
+- Configure date range filters and campaign/location/channel selectors
 - Preview KPIs and charts in real-time
-- Choose Template or AI (Groq) summary mode
-- **When `GROQ_API_KEY` is set, AI (Groq) is selected by default**
+- Choose Template or AI (Groq) summary mode (defaults to Groq when `GROQ_API_KEY` is present)
 - Generate and download **PPTX and PDF** reports (PDF created automatically)
+
+### Supported Data Sources
+
+| Source Type       | How to Use                                                                                                  |
+|-------------------|-------------------------------------------------------------------------------------------------------------|
+| Sample Dataset    | Bundled CSV (`sample_data/marketing_campaign_performance_sample.csv`)                                       |
+| Upload CSV        | Drag & drop CSV with required columns (`Date`, `Campaign`, `Impressions`, `Clicks`, `Spend`, `Visits`)       |
+| SQL Query         | Provide a SQLAlchemy connection string (e.g., `sqlite:///path.db`, `postgresql+psycopg2://user:pass@host/db`) and a SQL query |
+| Database Table    | Provide connection string + table name; optional row limit                                                  |
+
+The app ships with an auto-generated SQLite database (`sample_data/marketing_campaign_performance_sample.db`) so you can test SQL modes immediately.
 
 ### Running Batch Script (Headless)
 
@@ -195,6 +206,12 @@ python src/auto_report.py --input sample_data/marketing_campaign_performance_sam
 
 # With Groq AI summary (requires GROQ_API_KEY)
 python src/auto_report.py --input sample_data/marketing_campaign_performance_sample.csv --out outputs/automated_report.pptx --use-groq
+
+# Use SQL query as input
+python src/auto_report.py --data-source sql --db-conn "sqlite:///sample_data/marketing_campaign_performance_sample.db" --db-query "SELECT * FROM marketing_data LIMIT 2000" --out outputs/sql_report.pptx
+
+# Use database table as input
+python src/auto_report.py --data-source table --db-conn "sqlite:///sample_data/marketing_campaign_performance_sample.db" --db-table marketing_data --db-limit 5000 --out outputs/table_report.pptx
 
 # Clear LLM cache
 python src/auto_report.py --clear-llm-cache
@@ -357,6 +374,8 @@ The generated PowerPoint presentation (`automated_report.pptx`) contains:
 - `openai>=1.3.0` - OpenAI API client (for LLM summaries)
 - `groq>=0.4.0` - Groq API client (for free-tier LLM summaries)
 - `python-dateutil>=2.8.2` - Date parsing utilities
+- `sqlalchemy>=2.0.0` - Database connectivity layer
+- `reportlab>=4.0.0` & `Pillow>=10.0.0` - PDF generation fallback (when LibreOffice is unavailable)
 
 ### External Tools (Optional)
 - `libreoffice` - For PPTX to PDF conversion

@@ -46,12 +46,13 @@ logger = logging.getLogger(__name__)
 
 
 def load_and_filter_data(
-    csv_path: str,
+    csv_path: Optional[str] = None,
     date_start: Optional[str] = None,
     date_end: Optional[str] = None,
     campaigns: Optional[list] = None,
     locations: Optional[list] = None,
-    channels: Optional[list] = None
+    channels: Optional[list] = None,
+    dataframe: Optional[pd.DataFrame] = None
 ) -> pd.DataFrame:
     """
     Load CSV data and apply filters.
@@ -67,8 +68,14 @@ def load_and_filter_data(
     Returns:
         Filtered DataFrame
     """
-    logger.info(f"Loading data from {csv_path}")
-    df = pd.read_csv(csv_path)
+    if dataframe is not None:
+        df = dataframe.copy()
+        logger.info(f"Filtering in-memory dataframe with {len(df)} rows")
+    else:
+        if not csv_path:
+            raise ValueError("csv_path is required when dataframe is not provided.")
+        logger.info(f"Loading data from {csv_path}")
+        df = pd.read_csv(csv_path)
     
     # Validate data
     is_valid, error_msg = validate_csv_data(df)
@@ -167,8 +174,8 @@ def build_llm_context(df: pd.DataFrame, kpis: dict, top_campaigns: list,
 
 
 def generate_report(
-    csv_path: str,
     output_path: str,
+    csv_path: Optional[str] = None,
     date_start: Optional[str] = None,
     date_end: Optional[str] = None,
     campaigns: Optional[list] = None,
@@ -177,21 +184,24 @@ def generate_report(
     use_llm: bool = False,
     use_groq: bool = False,
     use_cache: bool = True,
-    temp_dir: str = "outputs"
+    temp_dir: str = "outputs",
+    dataframe: Optional[pd.DataFrame] = None
 ) -> str:
     """
-    Main pipeline: ingest CSV, compute KPIs, create charts, generate PPTX.
+    Main pipeline: ingest data, compute KPIs, create charts, generate PPTX.
     
     Args:
-        csv_path: Path to input CSV file
         output_path: Path to save output PPTX
+        csv_path: Path to input CSV file (optional if dataframe provided)
         date_start: Start date filter
         date_end: End date filter
         campaigns: Campaign filter list
         locations: Location filter list
         channels: Channel filter list
         use_llm: Whether to use LLM for summary generation
+        use_cache: Cache toggle for Groq summary
         temp_dir: Temporary directory for chart images
+        dataframe: Optional in-memory dataframe (bypasses csv_path)
         
     Returns:
         Path to generated PPTX file
@@ -202,7 +212,15 @@ def generate_report(
     
     # Step 1: Ingest and filter data
     logger.info("Step 1: Ingesting and filtering data")
-    df = load_and_filter_data(csv_path, date_start, date_end, campaigns, locations, channels)
+    df = load_and_filter_data(
+        csv_path=csv_path,
+        date_start=date_start,
+        date_end=date_end,
+        campaigns=campaigns,
+        locations=locations,
+        channels=channels,
+        dataframe=dataframe
+    )
     
     if df.empty:
         raise ValueError("No data remaining after applying filters")
@@ -290,12 +308,36 @@ def create_presentation(
     title_para.font.bold = True
     title_para.alignment = PP_ALIGN.CENTER
     
-    timestamp_box = slide1.shapes.add_textbox(Inches(1), Inches(4), Inches(8), Inches(0.5))
+    timestamp_box = slide1.shapes.add_textbox(Inches(1), Inches(3.8), Inches(8), Inches(0.5))
     timestamp_frame = timestamp_box.text_frame
     timestamp_frame.text = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     timestamp_para = timestamp_frame.paragraphs[0]
     timestamp_para.font.size = Pt(18)
     timestamp_para.alignment = PP_ALIGN.CENTER
+    
+    # KPI snapshot on title slide
+    kpi_box = slide1.shapes.add_textbox(Inches(1.5), Inches(4.6), Inches(7), Inches(2))
+    kpi_frame = kpi_box.text_frame
+    kpi_frame.word_wrap = True
+    kpi_paragraphs = [
+        f"Total Impressions: {kpis['total_impressions']:,.0f}",
+        f"Total Clicks: {kpis['total_clicks']:,.0f}",
+        f"Total Spend: ${kpis['total_spend']:,.2f}",
+        f"Total Visits: {kpis['total_visits']:,.0f}",
+        f"Avg CTR: {kpis['avg_ctr']:.2f}%",
+        f"Avg CPC: ${kpis['avg_cpc']:.2f}"
+    ]
+    kpi_frame.text = "Key Metrics Snapshot"
+    first_para = kpi_frame.paragraphs[0]
+    first_para.font.size = Pt(20)
+    first_para.font.bold = True
+    first_para.space_after = Pt(10)
+    
+    for metric in kpi_paragraphs:
+        p = kpi_frame.add_paragraph()
+        p.text = f"• {metric}"
+        p.font.size = Pt(16)
+        p.space_after = Pt(4)
     
     # Slide 2: Executive Summary
     slide2 = prs.slides.add_slide(prs.slide_layouts[6])
@@ -385,7 +427,7 @@ def create_presentation(
 def main():
     """Command-line interface for batch report generation."""
     parser = argparse.ArgumentParser(description='Generate automated marketing campaign report')
-    parser.add_argument('--input', required=True, help='Path to input CSV file')
+    parser.add_argument('--input', help='Path to input CSV file')
     parser.add_argument('--out', default='outputs/automated_report.pptx', help='Output PPTX path')
     parser.add_argument('--date-start', help='Start date filter (YYYY-MM-DD)')
     parser.add_argument('--date-end', help='End date filter (YYYY-MM-DD)')
@@ -394,6 +436,13 @@ def main():
     parser.add_argument('--use-groq', action='store_true', help='Use Groq AI for summary generation')
     parser.add_argument('--no-cache', action='store_true', help='Disable LLM response caching')
     parser.add_argument('--clear-llm-cache', action='store_true', help='Clear LLM cache and exit')
+    parser.add_argument('--data-source', choices=['csv', 'sql', 'table'], default='csv',
+                        help='Select data source type (default: csv)')
+    parser.add_argument('--db-conn', help='SQLAlchemy connection string for SQL/table sources')
+    parser.add_argument('--db-query', help='SQL query to execute when data-source=sql')
+    parser.add_argument('--db-table', help='Table name to read when data-source=table')
+    parser.add_argument('--db-limit', type=int, default=10000,
+                        help='Row limit when loading a table (data-source=table)')
     
     args = parser.parse_args()
     
@@ -408,6 +457,29 @@ def main():
     use_groq = args.use_groq
     use_cache = not args.no_cache
     
+    df_source = None
+    if args.data_source == 'csv':
+        if not args.input:
+            parser.error("--input is required when data-source=csv")
+    elif args.data_source == 'sql':
+        if not args.db_conn or not args.db_query:
+            parser.error("--db-conn and --db-query are required when data-source=sql")
+        from src.data_loader import load_sql_query, DataLoaderError
+        try:
+            df_source = load_sql_query(args.db_conn, args.db_query)
+            print(f"✓ Loaded {len(df_source)} rows from SQL query")
+        except DataLoaderError as exc:
+            parser.error(str(exc))
+    elif args.data_source == 'table':
+        if not args.db_conn or not args.db_table:
+            parser.error("--db-conn and --db-table are required when data-source=table")
+        from src.data_loader import load_database_table, DataLoaderError
+        try:
+            df_source = load_database_table(args.db_conn, args.db_table, args.db_limit)
+            print(f"✓ Loaded {len(df_source)} rows from table {args.db_table}")
+        except DataLoaderError as exc:
+            parser.error(str(exc))
+    
     try:
         output_path = generate_report(
             csv_path=args.input,
@@ -417,7 +489,8 @@ def main():
             campaigns=args.campaigns,
             use_llm=use_llm,
             use_groq=use_groq,
-            use_cache=use_cache
+            use_cache=use_cache,
+            dataframe=df_source
         )
         print(f"✓ Report generated: {output_path}")
     except Exception as e:

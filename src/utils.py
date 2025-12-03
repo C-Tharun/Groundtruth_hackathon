@@ -528,7 +528,8 @@ def llm_generate_summary_with_groq(
             cached_response = cache[context_hash]
             logger.info(f"Cache hit for context hash {context_hash[:8]}...")
             latency = time.time() - start_time
-            return cached_response.get('summary', ''), latency
+            cached_summary = cached_response.get('summary', '')
+            return _normalize_summary_text(cached_summary), latency
     
     # Check for API key
     groq_key = os.getenv('GROQ_API_KEY')
@@ -629,37 +630,18 @@ def _call_groq_with_retry(api_key: str, prompt: str, timeout: int = 10, max_retr
         try:
             logger.info(f"Calling Groq API (attempt {attempt + 1}/{max_retries + 1})")
             
+            # Use a current, supported Groq model
             response = client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=500
             )
             
             raw_text = response.choices[0].message.content.strip()
+            formatted_output = _format_llm_output(raw_text)
             
-            # Try to parse as JSON first
-            try:
-                parsed = json.loads(raw_text)
-                if isinstance(parsed, dict):
-                    # Format as structured summary
-                    summary_parts = []
-                    if 'summary' in parsed:
-                        summary_parts.append(parsed['summary'])
-                    if 'bullets' in parsed and isinstance(parsed['bullets'], list):
-                        summary_parts.append("\nKey Insights:")
-                        for bullet in parsed['bullets']:
-                            summary_parts.append(f"• {bullet}")
-                    if 'recommendations' in parsed and isinstance(parsed['recommendations'], list):
-                        summary_parts.append("\nRecommendations:")
-                        for rec in parsed['recommendations']:
-                            summary_parts.append(f"• {rec}")
-                    return "\n".join(summary_parts)
-            except json.JSONDecodeError:
-                # Not JSON, return as-is
-                pass
-            
-            return raw_text
+            return formatted_output
             
         except Exception as e:
             last_exception = e
@@ -671,6 +653,134 @@ def _call_groq_with_retry(api_key: str, prompt: str, timeout: int = 10, max_retr
                 logger.error(f"Groq API call failed after {max_retries + 1} attempts: {e}")
     
     raise last_exception
+
+
+def _normalize_summary_text(text: str) -> str:
+    """Ensure cached summaries are rendered without JSON fences."""
+    if not text:
+        return text
+    return _format_llm_output(text)
+
+
+def _extract_json_from_text(raw_text: str) -> Optional[dict]:
+    """Extract JSON payload from LLM output."""
+    cleaned = raw_text.strip()
+    
+    if "```json" in cleaned:
+        start = cleaned.find("```json") + len("```json")
+        end = cleaned.find("```", start)
+        if end != -1:
+            candidate = cleaned[start:end].strip()
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+    
+    stripped = cleaned
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+
+def _format_llm_output(raw_text: str) -> str:
+    """Format Groq output into plain text without JSON fences."""
+    payload = _extract_json_from_text(raw_text)
+    if payload:
+        parts = []
+        summary = payload.get("summary")
+        if summary:
+            parts.append(summary.strip())
+        bullets = payload.get("bullets")
+        if bullets:
+            parts.append("\nKey Insights:")
+            for bullet in bullets:
+                parts.append(f"• {bullet}")
+        recs = payload.get("recommendations")
+        if recs:
+            parts.append("\nRecommendations:")
+            for rec in recs:
+                parts.append(f"• {rec}")
+        formatted = "\n".join(parts).strip()
+        if formatted:
+            return formatted
+    if raw_text.startswith("```"):
+        lines = raw_text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return raw_text
+
+
+def _extract_json_from_text(raw_text: str) -> Optional[dict]:
+    """Extract JSON payload from LLM output."""
+    cleaned = raw_text.strip()
+    
+    if "```json" in cleaned:
+        start = cleaned.find("```json") + len("```json")
+        end = cleaned.find("```", start)
+        if end != -1:
+            candidate = cleaned[start:end].strip()
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+    
+    # Try entire text (removing fences if needed)
+    stripped = cleaned
+    if stripped.startswith("```"):
+        stripped = stripped.strip("`")
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        stripped = "\n".join(lines)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+
+def _format_llm_output(raw_text: str) -> str:
+    """Format Groq output into plain text without JSON fences."""
+    payload = _extract_json_from_text(raw_text)
+    if payload:
+        parts = []
+        summary = payload.get("summary")
+        if summary:
+            parts.append(summary.strip())
+        bullets = payload.get("bullets")
+        if bullets:
+            parts.append("\nKey Insights:")
+            for bullet in bullets:
+                parts.append(f"• {bullet}")
+        recs = payload.get("recommendations")
+        if recs:
+            parts.append("\nRecommendations:")
+            for rec in recs:
+                parts.append(f"• {rec}")
+        formatted = "\n".join(parts).strip()
+        if formatted:
+            return formatted
+    # No JSON payload detected; remove fences if present
+    if raw_text.startswith("```"):
+        lines = raw_text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+    return raw_text
 
 
 def generate_template_summary_from_context(context: Dict[str, Any]) -> str:

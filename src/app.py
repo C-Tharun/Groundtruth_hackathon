@@ -37,6 +37,13 @@ from src.utils import (
     get_top_campaigns_list
 )
 from src.auto_report import generate_report
+from src.data_loader import (
+    load_csv_from_buffer,
+    load_sql_query,
+    load_database_table,
+    DataLoaderError,
+    ensure_sample_sqlite
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -90,13 +97,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+SAMPLE_CSV_PATH = Path(__file__).parent.parent / "sample_data" / "marketing_campaign_performance_sample.csv"
+SAMPLE_DB_PATH = Path(__file__).parent.parent / "sample_data" / "marketing_campaign_performance_sample.db"
+
+
 @st.cache_data
 def load_sample_data():
     """Load sample data with caching."""
-    sample_path = Path(__file__).parent.parent / "sample_data" / "marketing_campaign_performance_sample.csv"
-    if sample_path.exists():
-        return pd.read_csv(sample_path)
+    if SAMPLE_CSV_PATH.exists():
+        return pd.read_csv(SAMPLE_CSV_PATH)
     return None
+
+
+@st.cache_data
+def ensure_sample_sqlite_connection() -> str:
+    """Create a SQLite database from the sample CSV for demo SQL queries."""
+    try:
+        return ensure_sample_sqlite(SAMPLE_CSV_PATH, SAMPLE_DB_PATH)
+    except Exception as exc:
+        logger.warning(f"Unable to create sample SQLite DB: {exc}")
+        return ""
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def run_sql_query_cached(connection_string: str, query: str) -> pd.DataFrame:
+    return load_sql_query(connection_string, query)
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def load_table_cached(connection_string: str, table_name: str, limit: int) -> pd.DataFrame:
+    return load_database_table(connection_string, table_name, limit if limit > 0 else None)
 
 
 def main():
@@ -120,7 +150,7 @@ def main():
         st.subheader("Data Source")
         data_source = st.radio(
             "Choose data source:",
-            ["Sample Dataset", "Upload CSV"],
+            ["Sample Dataset", "Upload CSV", "SQL Query", "Database Table"],
             index=0
         )
         
@@ -130,39 +160,69 @@ def main():
             if df is None:
                 st.error("Sample data not found. Please upload a CSV file.")
                 st.stop()
-            else:
-                st.success(f"✓ Loaded {len(df)} rows from sample data")
-        else:
-            uploaded_file = st.file_uploader("Upload CSV file", type=['csv'])
+            st.success(f"✓ Loaded {len(df)} rows from sample data")
+        elif data_source == "Upload CSV":
+            uploaded_file = st.file_uploader("Upload CSV file", type=['csv', 'txt'])
             
-            # Show CSV format requirements
             with st.expander("📋 Required CSV Format", expanded=False):
                 st.markdown("""
                 **Required Columns:**
-                - `Date` - Date of the campaign (YYYY-MM-DD format)
-                - `Campaign` - Campaign name
-                - `Impressions` - Number of impressions (numeric)
-                - `Clicks` - Number of clicks (numeric)
-                - `Spend` - Amount spent (numeric)
-                - `Visits` - Number of visits (numeric)
+                - `Date`, `Campaign`, `Impressions`, `Clicks`, `Spend`, `Visits`
                 
                 **Optional Columns:**
-                - `Location` - Location filter
-                - `Channel` - Channel filter
-                
-                **Example:**
-                ```csv
-                Date,Campaign,Impressions,Clicks,Spend,Visits
-                2024-01-01,Summer Sale,10000,500,1000.50,450
-                2024-01-02,Black Friday,15000,750,1500.75,680
-                ```
+                - `Location`, `Channel`
                 """)
             
             if uploaded_file is not None:
-                df = pd.read_csv(uploaded_file)
-                st.success(f"✓ Loaded {len(df)} rows")
+                try:
+                    uploaded_file.seek(0)
+                    df = load_csv_from_buffer(uploaded_file)
+                    st.success(f"✓ Loaded {len(df)} rows")
+                except DataLoaderError as exc:
+                    st.error(str(exc))
+                    st.stop()
             else:
                 st.info("👆 Please upload a CSV file to get started")
+                st.stop()
+        elif data_source == "SQL Query":
+            sample_conn = ensure_sample_sqlite_connection()
+            default_query = "SELECT * FROM marketing_data LIMIT 500"
+            with st.form("sql_query_form"):
+                conn_str = st.text_input(
+                    "SQLAlchemy connection string",
+                    value=sample_conn,
+                    help="Example: sqlite:///path/to.db or postgresql+psycopg2://user:pass@host/db"
+                )
+                query = st.text_area("SQL query", value=default_query, height=150)
+                submitted = st.form_submit_button("Run Query")
+            if not submitted:
+                st.info("Enter a connection string and SQL query, then click **Run Query**.")
+                st.stop()
+            try:
+                df = run_sql_query_cached(conn_str, query)
+                st.success(f"✓ Loaded {len(df)} rows from SQL query")
+            except DataLoaderError as exc:
+                st.error(str(exc))
+                st.stop()
+        elif data_source == "Database Table":
+            sample_conn = ensure_sample_sqlite_connection()
+            with st.form("db_table_form"):
+                conn_str = st.text_input(
+                    "SQLAlchemy connection string",
+                    value=sample_conn,
+                    help="Example: sqlite:///path/to.db or mysql+pymysql://user:pass@host/db"
+                )
+                table_name = st.text_input("Table name", value="marketing_data")
+                limit = st.number_input("Limit rows", value=5000, min_value=0, step=100)
+                submitted = st.form_submit_button("Load Table")
+            if not submitted:
+                st.info("Provide connection details, then click **Load Table**.")
+                st.stop()
+            try:
+                df = load_table_cached(conn_str, table_name, int(limit))
+                st.success(f"✓ Loaded {len(df)} rows from table {table_name}")
+            except DataLoaderError as exc:
+                st.error(str(exc))
                 st.stop()
         
         # Validate data
@@ -365,10 +425,10 @@ def main():
                 channels_list = selected_channels if selected_channels else None
                 
                 # Determine input CSV path
+                input_csv = None
                 if data_source == "Sample Dataset":
-                    input_csv = str(Path(__file__).parent.parent / "sample_data" / "marketing_campaign_performance_sample.csv")
-                else:
-                    # Save uploaded file temporarily
+                    input_csv = str(SAMPLE_CSV_PATH)
+                elif data_source == "Upload CSV":
                     input_csv = "outputs/temp_upload.csv"
                     df.to_csv(input_csv, index=False)
                 
@@ -402,7 +462,8 @@ def main():
                     channels=channels_list,
                     use_llm=False,  # Legacy mode disabled
                     use_groq=use_groq and groq_api_key_set,
-                    use_cache=use_cache
+                    use_cache=use_cache,
+                    dataframe=df_filtered
                 )
                 
                 st.success("✓ Report generated successfully!")
@@ -424,7 +485,10 @@ def main():
                 
                 try:
                     from src.pdf_converter import convert_pptx_to_pdf
-                    pdf_result = convert_pptx_to_pdf(output_path, pdf_path)
+                    pdf_result = convert_pptx_to_pdf(
+                        output_path,
+                        pdf_path
+                    )
                     
                     if pdf_result and Path(pdf_path).exists():
                         pdf_generated = True
