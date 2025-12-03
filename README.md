@@ -7,6 +7,11 @@ A complete Python solution for automated marketing campaign performance analysis
 
 The Automated Insight Engine addresses the need for rapid, data-driven insights from marketing campaign performance data. It automates the entire pipeline from raw CSV data to presentation-ready reports, eliminating manual data processing and visualization work.
 
+## 📊 System Architecture Diagram
+
+![System Architecture](./assets/diagram-export-3-12-2025-11_49_03-am.png)
+
+
 **Key Requirements:**
 - Ingest marketing campaign CSV data
 - Compute comprehensive KPIs (Impressions, Clicks, Spend, Visits, CTR, CPC)
