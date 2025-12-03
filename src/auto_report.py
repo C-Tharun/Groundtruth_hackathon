@@ -22,7 +22,8 @@ try:
         create_time_series_chart,
         create_top_campaigns_chart,
         get_top_campaigns_list,
-        llm_generate_summary
+        llm_generate_summary,
+        llm_generate_summary_with_groq
     )
 except ImportError:
     # Fallback for direct script execution
@@ -35,7 +36,8 @@ except ImportError:
         create_time_series_chart,
         create_top_campaigns_chart,
         get_top_campaigns_list,
-        llm_generate_summary
+        llm_generate_summary,
+        llm_generate_summary_with_groq
     )
 
 # Configure logging
@@ -98,6 +100,72 @@ def load_and_filter_data(
     return df
 
 
+def build_llm_context(df: pd.DataFrame, kpis: dict, top_campaigns: list, 
+                       date_start: Optional[str], date_end: Optional[str]) -> dict:
+    """
+    Build context dictionary for LLM from aggregated data.
+    
+    Args:
+        df: Filtered DataFrame
+        kpis: Computed KPI dictionary
+        top_campaigns: List of top campaign dictionaries
+        date_start: Start date string
+        date_end: End date string
+        
+    Returns:
+        Context dictionary for LLM
+    """
+    # Build time window string
+    if date_start and date_end:
+        time_window = f"{date_start} to {date_end}"
+    elif 'Date' in df.columns:
+        df['Date'] = pd.to_datetime(df['Date'])
+        min_date = df['Date'].min().strftime('%Y-%m-%d')
+        max_date = df['Date'].max().strftime('%Y-%m-%d')
+        time_window = f"{min_date} to {max_date}"
+    else:
+        time_window = "Unknown period"
+    
+    # Build totals
+    totals = {
+        'impressions': float(kpis.get('total_impressions', 0)),
+        'clicks': float(kpis.get('total_clicks', 0)),
+        'spend': float(kpis.get('total_spend', 0)),
+        'visits': float(kpis.get('total_visits', 0))
+    }
+    
+    # Build metrics
+    metrics = {
+        'avg_ctr': float(kpis.get('avg_ctr', 0)),
+        'avg_cpc': float(kpis.get('avg_cpc', 0))
+    }
+    
+    # Calculate ROI if possible (simplified: visits / spend)
+    if totals['spend'] > 0:
+        metrics['avg_roi'] = totals['visits'] / totals['spend']
+    else:
+        metrics['avg_roi'] = 0.0
+    
+    # Build top campaigns (limit to top 3)
+    top_campaigns_list = []
+    for campaign in top_campaigns[:3]:
+        top_campaigns_list.append({
+            'name': str(campaign.get('Campaign', '')),
+            'visits': float(campaign.get('Visits', 0)),
+            'ctr': float(campaign.get('CTR', 0)),
+            'spend': float(campaign.get('Spend', 0))
+        })
+    
+    context = {
+        'time_window': time_window,
+        'totals': totals,
+        'metrics': metrics,
+        'top_campaigns': top_campaigns_list
+    }
+    
+    return context
+
+
 def generate_report(
     csv_path: str,
     output_path: str,
@@ -107,6 +175,8 @@ def generate_report(
     locations: Optional[list] = None,
     channels: Optional[list] = None,
     use_llm: bool = False,
+    use_groq: bool = False,
+    use_cache: bool = True,
     temp_dir: str = "outputs"
 ) -> str:
     """
@@ -157,7 +227,20 @@ def generate_report(
     
     # Step 5: Generate executive summary
     logger.info("Step 5: Generating executive summary")
-    summary = llm_generate_summary(kpis, top_campaigns, use_llm=use_llm)
+    
+    if use_groq:
+        # Build context for Groq
+        context = build_llm_context(df, kpis, top_campaigns, date_start, date_end)
+        summary, latency = llm_generate_summary_with_groq(context, use_cache=use_cache)
+        if latency:
+            logger.info(f"Groq summary generated in {latency:.2f}s")
+    elif use_llm:
+        # Use legacy LLM function (OpenAI/Groq fallback)
+        summary = llm_generate_summary(kpis, top_campaigns, use_llm=True)
+    else:
+        # Use template
+        from src.utils import _generate_template_summary
+        summary = _generate_template_summary(kpis, top_campaigns)
     
     # Step 6: Create PPTX presentation
     logger.info("Step 6: Creating PPTX presentation")
@@ -308,10 +391,22 @@ def main():
     parser.add_argument('--date-end', help='End date filter (YYYY-MM-DD)')
     parser.add_argument('--campaigns', nargs='+', help='Campaign names to filter')
     parser.add_argument('--no-llm', action='store_true', help='Disable LLM summary generation')
+    parser.add_argument('--use-groq', action='store_true', help='Use Groq AI for summary generation')
+    parser.add_argument('--no-cache', action='store_true', help='Disable LLM response caching')
+    parser.add_argument('--clear-llm-cache', action='store_true', help='Clear LLM cache and exit')
     
     args = parser.parse_args()
     
+    # Handle cache clearing
+    if args.clear_llm_cache:
+        from src.utils import clear_llm_cache
+        clear_llm_cache()
+        print("✓ LLM cache cleared")
+        return
+    
     use_llm = not args.no_llm
+    use_groq = args.use_groq
+    use_cache = not args.no_cache
     
     try:
         output_path = generate_report(
@@ -320,7 +415,9 @@ def main():
             date_start=args.date_start,
             date_end=args.date_end,
             campaigns=args.campaigns,
-            use_llm=use_llm
+            use_llm=use_llm,
+            use_groq=use_groq,
+            use_cache=use_cache
         )
         print(f"✓ Report generated: {output_path}")
     except Exception as e:

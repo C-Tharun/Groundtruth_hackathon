@@ -3,13 +3,28 @@ Utility functions for data processing, KPI calculations, charting, and LLM integ
 """
 
 import os
+import json
+import hashlib
+import time
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from io import BytesIO
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Load .env file from project root
+    env_path = Path(__file__).parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    # python-dotenv not installed, will use system environment variables only
+    pass
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -350,6 +365,343 @@ def _generate_template_summary(kpis: Dict[str, float], top_campaigns: List[Dict[
         summary += "• Maintain current creative performance and scale successful campaigns\n"
     
     if kpis['avg_cpc'] > 1.0:
+        summary += "• Review bidding strategy and keyword selection to reduce cost per click\n"
+    else:
+        summary += "• Current CPC is efficient; consider increasing budget for high-performing campaigns\n"
+    
+    return summary
+
+
+# ============================================================================
+# Groq LLM Integration with Caching and Security
+# ============================================================================
+
+def sanitize_for_llm(aggregates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Sanitize aggregated data to ensure no PII is sent to LLM APIs.
+    
+    Removes any fields that could contain:
+    - Customer identifiers (emails, phone numbers, IDs)
+    - Raw user data
+    - Personal information
+    
+    Args:
+        aggregates: Dictionary of aggregated metrics
+        
+    Returns:
+        Sanitized dictionary with only safe aggregated metrics
+    """
+    sanitized = {}
+    
+    # Only include safe aggregated metrics
+    safe_keys = [
+        'time_window', 'totals', 'metrics', 'top_campaigns',
+        'total_impressions', 'total_clicks', 'total_spend', 'total_visits',
+        'avg_ctr', 'avg_cpc', 'avg_roi'
+    ]
+    
+    for key, value in aggregates.items():
+        if key in safe_keys:
+            # For top_campaigns, only include safe fields
+            if key == 'top_campaigns' and isinstance(value, list):
+                sanitized[key] = []
+                for campaign in value:
+                    safe_campaign = {
+                        'name': str(campaign.get('Campaign', campaign.get('name', ''))),
+                        'visits': float(campaign.get('Visits', campaign.get('visits', 0))),
+                        'ctr': float(campaign.get('CTR', campaign.get('ctr', 0))),
+                        'spend': float(campaign.get('Spend', campaign.get('spend', 0)))
+                    }
+                    sanitized[key].append(safe_campaign)
+            else:
+                sanitized[key] = value
+    
+    return sanitized
+
+
+def _get_cache_path() -> Path:
+    """Get path to LLM cache file."""
+    cache_path = Path("outputs/llm_cache.json")
+    cache_path.parent.mkdir(exist_ok=True)
+    return cache_path
+
+
+def _hash_context(context: Dict[str, Any]) -> str:
+    """Generate SHA256 hash of context for caching."""
+    context_str = json.dumps(context, sort_keys=True)
+    return hashlib.sha256(context_str.encode()).hexdigest()
+
+
+def _load_cache() -> Dict[str, Any]:
+    """Load LLM cache from file."""
+    cache_path = _get_cache_path()
+    if cache_path.exists():
+        try:
+            with open(cache_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load cache: {e}")
+    return {}
+
+
+def _save_cache(cache: Dict[str, Any]) -> None:
+    """Save LLM cache to file."""
+    cache_path = _get_cache_path()
+    try:
+        with open(cache_path, 'w') as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save cache: {e}")
+
+
+def clear_llm_cache() -> None:
+    """Clear the LLM cache."""
+    cache_path = _get_cache_path()
+    if cache_path.exists():
+        cache_path.unlink()
+        logger.info("LLM cache cleared")
+    else:
+        logger.info("LLM cache already empty")
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimation (1 token ≈ 4 characters)."""
+    return len(text) // 4
+
+
+def _truncate_context_if_needed(context: Dict[str, Any], max_tokens: int = 3000) -> Dict[str, Any]:
+    """Truncate context if it exceeds token limit."""
+    context_str = json.dumps(context)
+    estimated_tokens = _estimate_tokens(context_str)
+    
+    if estimated_tokens <= max_tokens:
+        return context
+    
+    logger.warning(f"Context too large ({estimated_tokens} tokens), truncating...")
+    
+    # Reduce top_campaigns to top 2 if present
+    if 'top_campaigns' in context and isinstance(context['top_campaigns'], list):
+        context['top_campaigns'] = context['top_campaigns'][:2]
+    
+    # Re-check
+    context_str = json.dumps(context)
+    estimated_tokens = _estimate_tokens(context_str)
+    
+    if estimated_tokens > max_tokens:
+        # Further truncation: remove less critical fields
+        if 'metrics' in context:
+            context['metrics'] = {k: v for k, v in list(context['metrics'].items())[:3]}
+    
+    return context
+
+
+def llm_generate_summary_with_groq(
+    context: Dict[str, Any],
+    use_cache: bool = True,
+    timeout: int = 10
+) -> Tuple[str, Optional[float]]:
+    """
+    Generate executive summary using Groq API with caching, retries, and fallback.
+    
+    Args:
+        context: Dictionary with aggregated metrics (time_window, totals, metrics, top_campaigns)
+        use_cache: Whether to use cached responses
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Tuple of (summary_text, latency_seconds) or (template_summary, None) on failure
+    """
+    start_time = time.time()
+    
+    # Sanitize context to remove any PII
+    sanitized_context = sanitize_for_llm(context)
+    
+    # Truncate if too large
+    sanitized_context = _truncate_context_if_needed(sanitized_context)
+    
+    # Check cache
+    if use_cache:
+        cache = _load_cache()
+        context_hash = _hash_context(sanitized_context)
+        
+        if context_hash in cache:
+            cached_response = cache[context_hash]
+            logger.info(f"Cache hit for context hash {context_hash[:8]}...")
+            latency = time.time() - start_time
+            return cached_response.get('summary', ''), latency
+    
+    # Check for API key
+    groq_key = os.getenv('GROQ_API_KEY')
+    if not groq_key:
+        logger.warning("GROQ_API_KEY not set, falling back to template")
+        return generate_template_summary_from_context(sanitized_context), None
+    
+    # Build prompt
+    prompt = _build_groq_prompt(sanitized_context)
+    
+    # Call Groq API with retries
+    try:
+        summary = _call_groq_with_retry(groq_key, prompt, timeout=timeout)
+        
+        # Validate response
+        if not summary or len(summary.strip()) < 50:
+            logger.warning("Groq returned empty or too short response, using template")
+            return generate_template_summary_from_context(sanitized_context), None
+        
+        latency = time.time() - start_time
+        
+        # Cache the response
+        if use_cache:
+            cache = _load_cache()
+            context_hash = _hash_context(sanitized_context)
+            cache[context_hash] = {
+                'summary': summary,
+                'timestamp': datetime.now().isoformat(),
+                'latency': latency
+            }
+            _save_cache(cache)
+        
+        logger.info(f"Groq summary generated successfully in {latency:.2f}s")
+        return summary, latency
+        
+    except Exception as e:
+        logger.error(f"Groq API call failed: {e}", exc_info=True)
+        return generate_template_summary_from_context(sanitized_context), None
+
+
+def _build_groq_prompt(context: Dict[str, Any]) -> str:
+    """Build the prompt for Groq API."""
+    prompt = """You are an executive summary writer for digital marketing performance. Produce a concise executive summary (3-4 sentences) and 3 bullet recommendations.
+
+Context:
+"""
+    
+    # Add time window
+    if 'time_window' in context:
+        prompt += f"Time Period: {context['time_window']}\n"
+    
+    # Add totals
+    if 'totals' in context:
+        totals = context['totals']
+        prompt += f"\nAggregate Metrics:\n"
+        prompt += f"- Total Impressions: {totals.get('impressions', 0):,.0f}\n"
+        prompt += f"- Total Clicks: {totals.get('clicks', 0):,.0f}\n"
+        prompt += f"- Total Spend: ${totals.get('spend', 0):,.2f}\n"
+        prompt += f"- Total Visits: {totals.get('visits', 0):,.0f}\n"
+    
+    # Add metrics
+    if 'metrics' in context:
+        metrics = context['metrics']
+        prompt += f"\nPerformance Metrics:\n"
+        if 'avg_ctr' in metrics:
+            prompt += f"- Average CTR: {metrics['avg_ctr']:.2f}%\n"
+        if 'avg_cpc' in metrics:
+            prompt += f"- Average CPC: ${metrics['avg_cpc']:.2f}\n"
+        if 'avg_roi' in metrics:
+            prompt += f"- Average ROI: {metrics['avg_roi']:.2f}\n"
+    
+    # Add top campaigns
+    if 'top_campaigns' in context and context['top_campaigns']:
+        prompt += f"\nTop Campaigns:\n"
+        for i, campaign in enumerate(context['top_campaigns'][:3], 1):
+            prompt += f"{i}. {campaign.get('name', 'N/A')}: {campaign.get('visits', 0):,.0f} visits, "
+            prompt += f"{campaign.get('ctr', 0):.2f}% CTR, ${campaign.get('spend', 0):,.2f} spend\n"
+    
+    prompt += """
+Constraints: Do not invent numbers; base your statements only on the given KPIs. Keep language formal and suitable for C-level executives.
+
+Output format: Return output as JSON with keys: 'summary' (string), 'bullets' (array of strings), 'recommendations' (array of strings). If you cannot return JSON, return plain text with the summary, bullets, and recommendations clearly separated."""
+    
+    return prompt
+
+
+def _call_groq_with_retry(api_key: str, prompt: str, timeout: int = 10, max_retries: int = 2) -> str:
+    """Call Groq API with exponential backoff retries."""
+    try:
+        from groq import Groq
+    except ImportError:
+        raise Exception("groq package not installed. Install with: pip install groq")
+    
+    client = Groq(api_key=api_key, timeout=timeout)
+    
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            logger.info(f"Calling Groq API (attempt {attempt + 1}/{max_retries + 1})")
+            
+            response = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=500
+            )
+            
+            raw_text = response.choices[0].message.content.strip()
+            
+            # Try to parse as JSON first
+            try:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict):
+                    # Format as structured summary
+                    summary_parts = []
+                    if 'summary' in parsed:
+                        summary_parts.append(parsed['summary'])
+                    if 'bullets' in parsed and isinstance(parsed['bullets'], list):
+                        summary_parts.append("\nKey Insights:")
+                        for bullet in parsed['bullets']:
+                            summary_parts.append(f"• {bullet}")
+                    if 'recommendations' in parsed and isinstance(parsed['recommendations'], list):
+                        summary_parts.append("\nRecommendations:")
+                        for rec in parsed['recommendations']:
+                            summary_parts.append(f"• {rec}")
+                    return "\n".join(summary_parts)
+            except json.JSONDecodeError:
+                # Not JSON, return as-is
+                pass
+            
+            return raw_text
+            
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                logger.warning(f"Groq API call failed (attempt {attempt + 1}): {e}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Groq API call failed after {max_retries + 1} attempts: {e}")
+    
+    raise last_exception
+
+
+def generate_template_summary_from_context(context: Dict[str, Any]) -> str:
+    """Generate template summary from context dictionary."""
+    totals = context.get('totals', {})
+    metrics = context.get('metrics', {})
+    top_campaigns = context.get('top_campaigns', [])
+    
+    summary = "EXECUTIVE SUMMARY\n\n"
+    summary += "Key Insights:\n"
+    
+    visits = totals.get('visits', 0)
+    ctr = metrics.get('avg_ctr', 0)
+    spend = totals.get('spend', 0)
+    clicks = totals.get('clicks', 0)
+    cpc = metrics.get('avg_cpc', 0)
+    
+    summary += f"• Campaign performance shows {visits:,.0f} total visits with an average CTR of {ctr:.2f}%\n"
+    summary += f"• Total marketing spend of ${spend:,.2f} generated {clicks:,.0f} clicks at an average CPC of ${cpc:.2f}\n"
+    
+    if top_campaigns:
+        top = top_campaigns[0]
+        summary += f"• Top performing campaign: {top.get('name', 'N/A')} with {top.get('visits', 0):,.0f} visits and {top.get('ctr', 0):.2f}% CTR\n"
+    
+    summary += "\nRecommendations:\n"
+    if ctr < 2.0:
+        summary += "• Optimize ad creative and targeting to improve click-through rates\n"
+    else:
+        summary += "• Maintain current creative performance and scale successful campaigns\n"
+    
+    if cpc > 1.0:
         summary += "• Review bidding strategy and keyword selection to reduce cost per click\n"
     else:
         summary += "• Current CPC is efficient; consider increasing budget for high-performing campaigns\n"
