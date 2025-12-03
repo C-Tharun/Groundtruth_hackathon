@@ -1,7 +1,7 @@
 # Challenge H-001: Automated Insight Engine
 
 
-A complete Python solution for automated marketing campaign performance analysis and report generation. This tool ingests CSV data, computes key performance indicators (KPIs), generates visualizations, and creates professional PowerPoint presentations with optional AI-powered executive summaries.
+A complete Python solution for automated marketing campaign performance analysis and report generation. This tool ingests CSV data, computes key performance indicators (KPIs), generates visualizations, and creates professional PowerPoint presentations with AI-powered executive summaries.
 
 ## 📋 Problem Statement (H-001)
 
@@ -28,7 +28,7 @@ The Automated Insight Engine addresses the need for rapid, data-driven insights 
 - **python-pptx** - PowerPoint presentation creation
 - **Streamlit** - Interactive web UI
 - **pytest** - Testing framework
-- **Groq/OpenAI API** - Optional LLM integration for executive summaries
+- **Groq/OpenAI API** - LLM integration for executive summaries
 
 **Optional Upgrades:**
 - `polars` - High-performance data processing (mentioned in README as upgrade path)
@@ -114,7 +114,7 @@ The solution follows a modular, pipeline-based architecture:
    pip install -r requirements.txt
    ```
 
-5. **Optional: Set up API keys for LLM features (if using AI mode):**
+5. **Set up API keys for LLM features (if using AI mode):**
    
    **Recommended: Use a `.env` file (easiest method):**
    
@@ -342,7 +342,7 @@ The generated PowerPoint presentation (`automated_report.pptx`) contains:
 - ✅ Professional presentation output
 - ✅ Flexible filtering and configuration
 - ✅ Robust error handling and validation
-- ✅ Optional AI integration with secure fallback
+- ✅ AI integration with secure fallback
 
 ## 🔧 Tools & Libraries
 
@@ -353,7 +353,7 @@ The generated PowerPoint presentation (`automated_report.pptx`) contains:
 - `streamlit>=1.28.0` - Web UI framework
 - `pytest>=7.4.0` - Testing framework
 
-### Optional Dependencies
+### Dependencies
 - `openai>=1.3.0` - OpenAI API client (for LLM summaries)
 - `groq>=0.4.0` - Groq API client (for free-tier LLM summaries)
 - `python-dateutil>=2.8.2` - Date parsing utilities
@@ -371,7 +371,7 @@ The generated PowerPoint presentation (`automated_report.pptx`) contains:
 
 ## 🤖 LLM Integration (Groq)
 
-The Automated Insight Engine includes optional AI-powered executive summary generation using Groq's fast LLM API.
+The Automated Insight Engine includes AI-powered executive summary generation using Groq's fast LLM API.
 
 ### Enabling AI Mode
 
