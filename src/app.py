@@ -101,6 +101,22 @@ SAMPLE_CSV_PATH = Path(__file__).parent.parent / "sample_data" / "marketing_camp
 SAMPLE_DB_PATH = Path(__file__).parent.parent / "sample_data" / "marketing_campaign_performance_sample.db"
 
 
+def _reset_active_df(source_name: str):
+    if st.session_state.get("active_source") != source_name:
+        st.session_state["active_df"] = None
+        st.session_state["active_source"] = source_name
+
+
+def _set_active_df(df: pd.DataFrame):
+    st.session_state["active_df"] = df
+
+
+if "active_df" not in st.session_state:
+    st.session_state["active_df"] = None
+if "active_source" not in st.session_state:
+    st.session_state["active_source"] = ""
+
+
 @st.cache_data
 def load_sample_data():
     """Load sample data with caching."""
@@ -155,12 +171,14 @@ def main():
         )
         
         df = None
+        _reset_active_df(data_source)
         if data_source == "Sample Dataset":
             df = load_sample_data()
             if df is None:
                 st.error("Sample data not found. Please upload a CSV file.")
                 st.stop()
             st.success(f"✓ Loaded {len(df)} rows from sample data")
+            _set_active_df(df)
         elif data_source == "Upload CSV":
             uploaded_file = st.file_uploader("Upload CSV file", type=['csv', 'txt'])
             
@@ -178,6 +196,7 @@ def main():
                     uploaded_file.seek(0)
                     df = load_csv_from_buffer(uploaded_file)
                     st.success(f"✓ Loaded {len(df)} rows")
+                    _set_active_df(df)
                 except DataLoaderError as exc:
                     st.error(str(exc))
                     st.stop()
@@ -195,14 +214,17 @@ def main():
                 )
                 query = st.text_area("SQL query", value=default_query, height=150)
                 submitted = st.form_submit_button("Run Query")
-            if not submitted:
+            if submitted:
+                try:
+                    df = run_sql_query_cached(conn_str, query)
+                    st.success(f"✓ Loaded {len(df)} rows from SQL query")
+                    _set_active_df(df)
+                except DataLoaderError as exc:
+                    st.error(str(exc))
+                    st.stop()
+            df = st.session_state.get("active_df")
+            if df is None:
                 st.info("Enter a connection string and SQL query, then click **Run Query**.")
-                st.stop()
-            try:
-                df = run_sql_query_cached(conn_str, query)
-                st.success(f"✓ Loaded {len(df)} rows from SQL query")
-            except DataLoaderError as exc:
-                st.error(str(exc))
                 st.stop()
         elif data_source == "Database Table":
             sample_conn = ensure_sample_sqlite_connection()
@@ -215,14 +237,17 @@ def main():
                 table_name = st.text_input("Table name", value="marketing_data")
                 limit = st.number_input("Limit rows", value=5000, min_value=0, step=100)
                 submitted = st.form_submit_button("Load Table")
-            if not submitted:
+            if submitted:
+                try:
+                    df = load_table_cached(conn_str, table_name, int(limit))
+                    st.success(f"✓ Loaded {len(df)} rows from table {table_name}")
+                    _set_active_df(df)
+                except DataLoaderError as exc:
+                    st.error(str(exc))
+                    st.stop()
+            df = st.session_state.get("active_df")
+            if df is None:
                 st.info("Provide connection details, then click **Load Table**.")
-                st.stop()
-            try:
-                df = load_table_cached(conn_str, table_name, int(limit))
-                st.success(f"✓ Loaded {len(df)} rows from table {table_name}")
-            except DataLoaderError as exc:
-                st.error(str(exc))
                 st.stop()
         
         # Validate data
