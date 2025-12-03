@@ -37,7 +37,7 @@ The solution follows a modular, pipeline-based architecture:
 2. **Data Filtering** - Apply date range, campaign, location, and channel filters
 3. **KPI Computation** - Calculate aggregated metrics (totals, averages, rates)
 4. **Visualization** - Generate time series and bar charts as PNG images
-5. **Summary Generation** - Use LLM or template-based executive summary
+5. **Summary Generation** - Use LLM (if available) or template-based executive summary
 6. **Presentation Creation** - Assemble PPTX with title, summary, visuals, top campaigns, and appendix slides
 7. **UI Interaction** - Streamlit interface for configuration, preview, and download
 
@@ -170,8 +170,9 @@ The app will open in your default browser at `http://localhost:8501`.
 - Configure date range filters
 - Select campaigns, locations, channels
 - Preview KPIs and charts in real-time
-- Choose Quick (template) or AI (LLM) summary mode
-- Generate and download PPTX reports
+- Choose Template or AI (Groq) summary mode
+- **When `GROQ_API_KEY` is set, AI (Groq) is selected by default**
+- Generate and download **PPTX and PDF** reports (PDF created automatically)
 
 ### Running Batch Script (Headless)
 
@@ -196,7 +197,13 @@ python src/auto_report.py --clear-llm-cache
 
 ### Converting PPTX to PDF
 
-If you have LibreOffice installed:
+PDF reports are generated **automatically** when you click \"Generate Report\" in the Streamlit UI:
+
+- The app first tries **LibreOffice** (if installed) for best-quality conversion
+- If LibreOffice is not available, it falls back to a **pure-Python pipeline** built with `reportlab` + `Pillow`
+- If conversion succeeds, you'll see a **\"📄 Download PDF Report\"** button next to the PPTX download
+
+If you prefer to run LibreOffice manually (optional):
 
 ```bash
 libreoffice --headless --convert-to pdf outputs/automated_report.pptx --outdir outputs/
