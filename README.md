@@ -17,7 +17,7 @@ The Automated Insight Engine addresses the need for rapid, data-driven insights 
 - Compute comprehensive KPIs (Impressions, Clicks, Spend, Visits, CTR, CPC)
 - Generate time series and comparative visualizations
 - Create professional PPTX presentations
-- Optional AI-powered executive summary generation
+- AI-powered executive summary generation
 - Modern, interactive Streamlit UI for configuration and preview
 
 ## 🛠️ Technology Stack
