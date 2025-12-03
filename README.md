@@ -37,7 +37,7 @@ The solution follows a modular, pipeline-based architecture:
 2. **Data Filtering** - Apply date range, campaign, location, and channel filters
 3. **KPI Computation** - Calculate aggregated metrics (totals, averages, rates)
 4. **Visualization** - Generate time series and bar charts as PNG images
-5. **Summary Generation** - Use LLM (if available) or template-based executive summary
+5. **Summary Generation** - Use LLM or template-based executive summary
 6. **Presentation Creation** - Assemble PPTX with title, summary, visuals, top campaigns, and appendix slides
 7. **UI Interaction** - Streamlit interface for configuration, preview, and download
 
