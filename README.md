@@ -333,8 +333,7 @@ This project is created for hackathon challenge H-001.
 
 ## 👤 Author
 
-Created for Challenge H-001: Automated Insight Engine
-
+Tharun Subramanian C
 ---
 
 **Ready to generate insights? Run `streamlit run src/app.py` and start exploring!** 🚀
